@@ -1,4 +1,4 @@
-const { test , after, beforeEach} = require('node:test')
+const { test, after, beforeEach } = require('node:test')
 
 const assert = require('node:assert')
 const mongoose = require('mongoose')
@@ -8,6 +8,10 @@ const Blog = require('../models/blog')
 
 // supertest wraps your app so we can make HTTP requests to it
 // WITHOUT actually starting the server (no app.listen needed!)
+const bcrypt = require('bcrypt')
+const User = require('../models/user')
+
+let token
 
 const api = supertest(app)
 
@@ -26,17 +30,35 @@ const initialBlogs = [
   },
 ]
 
-beforeEach(async() => {
-    await Blog.deleteMany({})
+beforeEach(async () => {
+  await Blog.deleteMany({})
+  await User.deleteMany({})
 
-    await Blog.insertMany(initialBlogs)
+  // create a test user
+  const passwordHash = await bcrypt.hash('testpass', 10)
+  const user = new User({ username: 'testuser', name: 'Test User', passwordHash })
+  await user.save()
+
+  // login to get a token
+  const loginResponse = await api
+    .post('/api/login')
+    .send({ username: 'testuser', password: 'testpass' })
+  token = loginResponse.body.token
+
+  // create initial blogs WITH the token
+  for (const blog of initialBlogs) {
+    await api
+      .post('/api/blogs')
+      .set('Authorization', `Bearer ${token}`)
+      .send(blog)
+  }
 })
 
-test('blogs are returned as json', async() => {
-    await api
-        .get('/api/blogs')
-        .expect(200)
-        .expect('Content-Type', /application\/json/)
+test('blogs are returned as json', async () => {
+  await api
+    .get('/api/blogs')
+    .expect(200)
+    .expect('Content-Type', /application\/json/)
 })
 
 test('there are two blogs', async () => {
@@ -54,6 +76,7 @@ test('a valid blog can be added', async () => {
 
   await api
     .post('/api/blogs')
+    .set('Authorization', `Bearer ${token}`)
     .send(newBlog)                                    // send the blog as request body
     .expect(201)                                      // expect 201 Created
     .expect('Content-Type', /application\/json/)
@@ -74,6 +97,7 @@ test('if likes is missing, it defaults to 0', async () => {
 
   const response = await api
     .post('/api/blogs')
+    .set('Authorization', `Bearer ${token}`)
     .send(newBlog)
     .expect(201)
 
@@ -89,6 +113,7 @@ test('blog without title is not added', async () => {
 
   await api
     .post('/api/blogs')
+    .set('Authorization', `Bearer ${token}`)
     .send(newBlog)
     .expect(400)
 
@@ -105,6 +130,7 @@ test('blog without url is not added', async () => {
 
   await api
     .post('/api/blogs')
+    .set('Authorization', `Bearer ${token}`)
     .send(newBlog)
     .expect(400)
 
@@ -124,19 +150,20 @@ test('unique identifier property is named id', async () => {
   })
 })
 
-test( ' a blog can be deleted', async() => {
-    const blogAtStart = await api.get('/api/blogs')
-    const blogAtDelete = blogAtStart.body[0]
+test(' a blog can be deleted', async () => {
+  const blogAtStart = await api.get('/api/blogs')
+  const blogAtDelete = blogAtStart.body[0]
 
-    await api 
-         .delete(`/api/blogs/${blogAtDelete.id}`)
-         .expect(204)
+  await api
+    .delete(`/api/blogs/${blogAtDelete.id}`)
+    .set('Authorization', `Bearer ${token}`)
+    .expect(204)
 
-    const blogAtEnd = await api.get('/api/blogs')
-    assert.strictEqual(blogAtEnd.body.length, initialBlogs.length - 1)
+  const blogAtEnd = await api.get('/api/blogs')
+  assert.strictEqual(blogAtEnd.body.length, initialBlogs.length - 1)
 
-    const titles = blogAtEnd.body.map(b => b.title)
-    assert(!titles.includes(blogAtDelete.title))
+  const titles = blogAtEnd.body.map(b => b.title)
+  assert(!titles.includes(blogAtDelete.title))
 })
 
 test('a blog can be updated', async () => {
@@ -156,9 +183,21 @@ test('a blog can be updated', async () => {
 
   assert.strictEqual(response.body.likes, blogToUpdate.likes + 10)
 })
+test('adding a blog fails with 401 if token is not provided', async () => {
+  const newBlog = {
+    title: 'Unauthorized blog',
+    author: 'No Token',
+    url: 'http://example.com',
+  }
+
+  await api
+    .post('/api/blogs')
+    .send(newBlog)
+    .expect(401)
+})
 
 
 
-after(async() => {
-    await mongoose.connection.close()
+after(async () => {
+  await mongoose.connection.close()
 })
